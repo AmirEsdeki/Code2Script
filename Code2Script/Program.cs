@@ -53,7 +53,7 @@ namespace TableGenerator
                         FkScript.AppendLine("GO");
                         FkScript.AppendLine("ALTER TABLE " + table.ClassName);
                         if (field.WithNoCheck) FkScript.Append(" WITH NOCHECK");
-                        FkScript.AppendLine("ADD CONSTRAINT FK_" + field.Name + " FOREIGN KEY (" + field.Name + ") REFERENCES " + relatedTable.ClassName + "(ID)");
+                        FkScript.AppendLine("ADD CONSTRAINT FK_" + field.Name + $" FOREIGN KEY ( {field.Name}Id ) REFERENCES " + relatedTable.ClassName + "(Id)");
                         FkScript.AppendLine("GO");
                     }
                 }
@@ -75,6 +75,7 @@ namespace TableGenerator
         public bool PrimaryKey { get; set; }
         public bool NotPrimaryKey { get; set; }
         public bool WithNoCheck { get; set; }
+        public bool Complex { get; set; }
     }
 
     public class TableClass
@@ -90,13 +91,20 @@ namespace TableGenerator
                 // Add the rest of your CLR Types to SQL Types mapping here
                 Dictionary<Type, String> dataMapper = new Dictionary<Type, string>();
                 dataMapper.Add(typeof(int), "INT");
+                dataMapper.Add(typeof(int?), "INT");
                 dataMapper.Add(typeof(long), "BIGINT");
+                dataMapper.Add(typeof(long?), "BIGINT");
                 dataMapper.Add(typeof(string), "NVARCHAR(MAX)");
                 dataMapper.Add(typeof(bool), "BIT");
+                dataMapper.Add(typeof(bool?), "BIT");
                 dataMapper.Add(typeof(DateTime), "DATETIME2");
+                dataMapper.Add(typeof(DateTime?), "DATETIME2");
                 dataMapper.Add(typeof(float), "FLOAT");
+                dataMapper.Add(typeof(float?), "FLOAT");
                 dataMapper.Add(typeof(decimal), "DECIMAL(18,0)");
+                dataMapper.Add(typeof(decimal?), "DECIMAL(18,0)");
                 dataMapper.Add(typeof(Guid), "UNIQUEIDENTIFIER");
+                dataMapper.Add(typeof(Guid?), "UNIQUEIDENTIFIER");
 
                 return dataMapper;
             }
@@ -135,11 +143,11 @@ namespace TableGenerator
                 field.Length = length is not null && length.Value < 5000 ? length.Value : null;
                 field.MapToType = (p.GetCustomAttribute(typeof(MapToType), false) as MapToType)?.Type;
                 field.Required = p.GetCustomAttribute(typeof(Required), false) is not null;
-                field.NotRequired = p.GetCustomAttribute(typeof(NotRequired), false) is not null;
                 field.Identity = p.GetCustomAttribute(typeof(Identity), false) is not null;
                 field.PrimaryKey = p.GetCustomAttribute(typeof(PrimaryKey), false) is not null;
                 field.NotPrimaryKey = p.GetCustomAttribute(typeof(NotPrimaryKey), false) is not null;
-
+                field.WithNoCheck = p.GetCustomAttribute(typeof(WithNoCheck), false) is not null;
+                field.Complex = p.PropertyType.IsClass && p.PropertyType != typeof(string);
                 this.Fields.Add(field);
             }
         }
@@ -147,13 +155,14 @@ namespace TableGenerator
         public string CreateTableScript()
         {
             StringBuilder script = new StringBuilder();
+            var fields = this.Fields.Where(f => !f.Complex).ToList();
 
             script.AppendLine("CREATE TABLE " + this.Schema + "." + this.ClassName);
             script.AppendLine("(");
-            
-            for (int i = 0; i < this.Fields.Count; i++)
+
+            for (int i = 0; i < fields.Count(); i++)
             {
-                Property field = this.Fields[i];
+                Property field = fields[i];
 
                 if (field.MapToType is not null)
                 {
@@ -172,22 +181,32 @@ namespace TableGenerator
                 }
                 else
                 {
+                    if (field.Type.IsEnum || IsNullableEnum(field.Type))
+                    {
+                        script.Append("\t " + field.Name + $" INT ");
+                    }
+                    else
+                    {
                     // if complex type? 
-                    continue;
+                        continue;
+                    }
                 }
 
-                if (i != Fields.Count - 1)
+                if (field.Identity)
                 {
-                    if (field.Identity)
-                    {
-                        script.Append("PRIMARY KEY IDENTITY(1,1) ");
-                    }
+                    script.Append("PRIMARY KEY IDENTITY(1,1) ");
+                }
 
-                    if (!IsNullable(field.Type))
-                    {
-                        script.Append("NOT ");
-                    }
-                    script.Append("NULL,");
+                if (!IsNullable(field.Type) || field.Required)
+                {
+                    script.Append("NOT ");
+                }
+
+                script.Append("NULL");
+
+                if (i != fields.Count() - 1)
+                {
+                    script.Append(",");
                 }
 
                 script.Append(Environment.NewLine);
@@ -197,7 +216,7 @@ namespace TableGenerator
             script.AppendLine("GO");
             script.AppendLine(Environment.NewLine);
 
-            if (!Fields.Any(f => !f.Identity))
+            if (!Fields.Any(f => f.Identity))
             {
                 if (Fields.Any(f => f.Name.ToLower() == "id" && !f.NotPrimaryKey))
                 {
@@ -223,6 +242,12 @@ namespace TableGenerator
         public bool IsNullable(Type type)
         {
             return Nullable.GetUnderlyingType(type) != null;
+        }
+
+        public bool IsNullableEnum(Type t)
+        {
+            Type u = Nullable.GetUnderlyingType(t);
+            return (u != null) && u.IsEnum;
         }
 
         public string CreatePrimaryKey(string column)
